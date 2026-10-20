@@ -72,22 +72,20 @@ def popular_banco():
             """, (c_id, num_conta, round(random.uniform(500, 50000), 2), fake.date_time_between(start_date='-3y', end_date='-6m')))
             contas_ids.append(cur.fetchone()['id'])
 
-        # Dispositivos comuns
+        # Dispositivos comuns: cada conta legítima tem o próprio aparelho.
+        # (Compartilhar aparelhos entre contas legítimas geraria falsos positivos no grafo.)
         print("📱 Gerando dispositivos e acessos regulares...")
-        device_ids = []
-        for i in range(80):
+        for i, c_id in enumerate(contas_ids):
             d_id = f"DEV_LEGITIMO_{i+1:04d}_{fake.uuid4()[:8]}"
             cur.execute("""
                 INSERT INTO dispositivos (device_id, modelo, sistema_operacional)
                 VALUES (%s, %s, %s) RETURNING id
             """, (d_id, random.choice(["iPhone 14", "Samsung Galaxy S23", "Motorola Edge", "Xiaomi 13"]), random.choice(["iOS", "Android"])))
-            device_ids.append(cur.fetchone()['id'])
-
-        for c_id in contas_ids:
+            dev_id = cur.fetchone()['id']
             cur.execute("""
                 INSERT INTO acessos (conta_id, dispositivo_id, ip_origem, geolocalizacao)
                 VALUES (%s, %s, %s, %s)
-            """, (c_id, random.choice(device_ids), fake.ipv4(), f"{fake.city()} - {fake.state_abbr()}"))
+            """, (c_id, dev_id, fake.ipv4(), f"{fake.city()} - {fake.state_abbr()}"))
 
         # Transações normais
         print("💸 Gerando 300 transações legítimas normais...")

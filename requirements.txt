@@ -1,0 +1,28 @@
+# Core & Cloud AI
+google-genai>=1.0.0
+google-cloud-aiplatform>=1.60.0
+
+# Vector Database & Hybrid Search
+qdrant-client>=1.11.0
+fastembed>=0.3.0
+rank-bm25>=0.2.2
+
+# Relational Database
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.30
+
+# Graph Database
+falkordb>=1.0.8
+networkx>=3.2.1
+pyvis>=0.3.2
+
+# Interface & Visualization
+streamlit>=1.36.0
+
+# Document Processing & Data
+faker>=25.0.0
+pypdf>=4.2.0
+pymupdf>=1.24.5
+pandas>=2.2.2
+pydantic>=2.7.4
+python-dotenv>=1.0.1

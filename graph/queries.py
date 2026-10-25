@@ -1,38 +1,23 @@
-# ========================================================
-# 🛡️ SENTINEL AI - CONSULTAS CYPHER DE INVESTIGAÇÃO
-# ========================================================
-# Cada função responde uma pergunta que o SQL não responde bem,
-# porque exige atravessar várias relações em sequência.
-# Essas funções serão expostas ao agente como ferramentas (Etapa 5).
-# ========================================================
-
 from graph.connection import get_graph
+
+# No FalkorDB, relationships(p) pode vir fora de ordem em caminhos variáveis/cíclicos;
+# extraímos origem/destino explícitos de cada aresta e reconstruímos a sequência.
+_TRANSFERENCIAS = "[r IN relationships(p) | [startNode(r).numero, endNode(r).numero, r.valor, r.data_hora]]"
 
 
 def _rows(result) -> list:
-    """Converte o result_set do FalkorDB em lista de dicionários."""
     colunas = [c[1] if isinstance(c, (list, tuple)) else c for c in result.header]
     return [dict(zip(colunas, linha)) for linha in result.result_set]
 
 
 def _validar_saltos(n: int, maximo: int = 5) -> int:
-    # Cypher não aceita parâmetro no tamanho do caminho (*1..N),
-    # então o número entra na string e precisa ser validado.
     n = int(n)
     if not 1 <= n <= maximo:
         raise ValueError(f"Número de saltos deve estar entre 1 e {maximo}")
     return n
 
 
-# Retorno padrão de um caminho de dinheiro.
-# Obs.: no FalkorDB, nodes(p) e relationships(p) podem vir fora de ordem em
-# caminhos de tamanho variável (principalmente cíclicos). Por isso cada aresta
-# traz origem/destino explícitos (startNode/endNode) e a ordem é reconstruída em Python.
-_TRANSFERENCIAS = "[r IN relationships(p) | [startNode(r).numero, endNode(r).numero, r.valor, r.data_hora]]"
-
-
 def _encadear(trechos: list, inicio: str = None) -> list:
-    """Ordena as transferências para que o destino de cada uma seja a origem da próxima."""
     restantes = list(trechos)
     if inicio is None:
         destinos = {t["destino"] for t in restantes}
@@ -63,7 +48,6 @@ def _formatar_caminho(linha: dict, inicio: str = None) -> dict:
 
 
 def detectar_ciclos_financeiros(conta_id: int, max_saltos: int = 4) -> list:
-    """Dinheiro que sai da conta e volta para ela passando por intermediários (A ➔ B ➔ C ➔ A)."""
     n = _validar_saltos(max_saltos)
     q = f"""
         MATCH p = (c:Conta {{id: $id}})-[:TRANSFERIU*2..{n}]->(c)
@@ -75,7 +59,6 @@ def detectar_ciclos_financeiros(conta_id: int, max_saltos: int = 4) -> list:
 
 
 def contas_com_mesmo_dispositivo_ou_ip(conta_id: int) -> list:
-    """Outras contas que usaram o mesmo aparelho ou o mesmo IP (indício de controle por uma só pessoa)."""
     q = """
         MATCH (c:Conta {id: $id})-[:ACESSOU_VIA|CONECTOU_DE]->(x)<-[:ACESSOU_VIA|CONECTOU_DE]-(outra:Conta)
         WHERE outra <> c
@@ -90,7 +73,6 @@ def contas_com_mesmo_dispositivo_ou_ip(conta_id: int) -> list:
 
 
 def rastrear_fluxo_dinheiro(conta_id: int, direcao: str = "saida", max_saltos: int = 3) -> list:
-    """Segue o dinheiro a partir da conta: para onde foi (saida) ou de onde veio (entrada)."""
     n = _validar_saltos(max_saltos)
     if direcao == "saida":
         padrao = f"(c:Conta {{id: $id}})-[:TRANSFERIU*1..{n}]->(fim:Conta)"
@@ -113,7 +95,6 @@ def rastrear_fluxo_dinheiro(conta_id: int, direcao: str = "saida", max_saltos: i
 
 
 def receptores_concentrados(min_origens: int = 3, limite: int = 10) -> list:
-    """Contas que recebem de muitas origens diferentes (padrão de conta coletora / empresa de fachada)."""
     q = """
         MATCH (o:Conta)-[t:TRANSFERIU]->(d:Conta)<-[:TITULAR_DE]-(cli:Cliente)
         WITH d, cli, count(DISTINCT o) AS origens, sum(t.valor) AS total_recebido

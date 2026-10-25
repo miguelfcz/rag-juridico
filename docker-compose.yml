@@ -1,5 +1,4 @@
 services:
-  # 🗄️ Banco Relacional: PostgreSQL para Dados Transacionais e Clientes
   postgres:
     image: postgres:16-alpine
     container_name: sentinel_postgres
@@ -18,7 +17,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # 🕸️ Banco de Grafo: FalkorDB para Mapeamento de Laranjas e Vínculos Ocultos
   falkordb:
     image: falkordb/falkordb:latest
     container_name: sentinel_falkordb

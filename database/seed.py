@@ -1,45 +1,37 @@
-# ========================================================
-# 🛡️ SENTINEL AI - SEEDER DE DADOS REALISTAS DE FRAUDE E PLD
-# ========================================================
-
 import os
 import sys
 import random
 import json
-
-sys.stdout.reconfigure(encoding='utf-8')
 from datetime import datetime, timedelta
 from faker import Faker
 from connection import get_db_connection
+
+sys.stdout.reconfigure(encoding='utf-8')
 
 fake = Faker('pt_BR')
 Faker.seed(42)
 random.seed(42)
 
+
 def inicializar_schema():
-    """Lê o schema.sql e recria as tabelas no PostgreSQL."""
-    print("🔄 Recriando tabelas no PostgreSQL...")
     schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
     with open(schema_path, 'r', encoding='utf-8') as f:
         schema_sql = f.read()
-    
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(schema_sql)
-    print("✅ Schema criado com sucesso!")
+
 
 def popular_banco():
-    """Gera população de clientes legítimos e injeta os 5 casos de crimes financeiros."""
     inicializar_schema()
 
     with get_db_connection() as conn:
         cur = conn.cursor()
 
-        print("👥 Gerando 120 clientes legítimos de ruído...")
         clientes_ids = []
         contas_ids = []
 
-        # 1. Clientes Comuns (Ruído de Fundo Legítimo)
         for _ in range(120):
             is_pj = random.random() < 0.2
             if is_pj:
@@ -64,7 +56,6 @@ def popular_banco():
             c_id = cur.fetchone()['id']
             clientes_ids.append(c_id)
 
-            # Criar conta para o cliente
             num_conta = f"{random.randint(10000, 99999)}-{random.randint(0, 9)}"
             cur.execute("""
                 INSERT INTO contas (cliente_id, numero_conta, saldo, status, data_abertura)
@@ -72,9 +63,6 @@ def popular_banco():
             """, (c_id, num_conta, round(random.uniform(500, 50000), 2), fake.date_time_between(start_date='-3y', end_date='-6m')))
             contas_ids.append(cur.fetchone()['id'])
 
-        # Dispositivos comuns: cada conta legítima tem o próprio aparelho.
-        # (Compartilhar aparelhos entre contas legítimas geraria falsos positivos no grafo.)
-        print("📱 Gerando dispositivos e acessos regulares...")
         for i, c_id in enumerate(contas_ids):
             d_id = f"DEV_LEGITIMO_{i+1:04d}_{fake.uuid4()[:8]}"
             cur.execute("""
@@ -87,8 +75,6 @@ def popular_banco():
                 VALUES (%s, %s, %s, %s)
             """, (c_id, dev_id, fake.ipv4(), f"{fake.city()} - {fake.state_abbr()}"))
 
-        # Transações normais
-        print("💸 Gerando 300 transações legítimas normais...")
         for _ in range(300):
             origem = random.choice(contas_ids)
             destino = random.choice(contas_ids)
@@ -99,15 +85,7 @@ def popular_banco():
                     VALUES (%s, %s, %s, 'PIX', %s, %s, 'CONCLUIDA', %s)
                 """, (origem, destino, val, fake.email(), fake.date_time_between(start_date='-30d', end_date='now'), "Pagamento de rotina"))
 
-        # ========================================================
-        # 🚨 INJEÇÃO DOS 5 CASOS DE CRIMES FINANCEIROS / FRAUDE
-        # ========================================================
-        print("\n🚨 INJETANDO OS 5 CASOS DE FRAUDE CRÍTICA PARA A IA AUDITAR...")
-
-        # ----------------------------------------------------
-        # CASO 1: SMURFING (Fracionamento de PIX de madrugada)
-        # ----------------------------------------------------
-        # Suspeito faz 5 transferências de R$ 9.800 logo abaixo do gatilho de R$ 10k do BACEN
+        # Caso 1: Smurfing (fracionamento abaixo de R$ 10k em janela noturna)
         cur.execute("""
             INSERT INTO clientes (nome, documento, tipo_pessoa, renda_declarada, ocupacao, cidade, estado, score_credito)
             VALUES ('Carlos Eduardo Peixoto (Suspeito)', '111.222.333-44', 'PF', 2800.00, 'Auxiliar de Almoxarifado', 'Campinas', 'SP', 420)
@@ -120,7 +98,6 @@ def popular_banco():
         """, (c1_cliente_id,))
         c1_conta_id = cur.fetchone()['id']
 
-        # Dispositivo do Caso 1
         cur.execute("""
             INSERT INTO dispositivos (device_id, modelo, sistema_operacional)
             VALUES ('DEV_SMURF_001_A998F', 'Samsung Galaxy A10', 'Android') RETURNING id
@@ -128,7 +105,6 @@ def popular_banco():
         dev_smurf_id = cur.fetchone()['id']
         cur.execute("INSERT INTO acessos (conta_id, dispositivo_id, ip_origem, geolocalizacao) VALUES (%s, %s, '187.54.12.89', 'Campinas - SP')", (c1_conta_id, dev_smurf_id))
 
-        # Conta destino do dinheiro fracionado
         cur.execute("""
             INSERT INTO clientes (nome, documento, tipo_pessoa, renda_declarada, ocupacao, cidade, estado)
             VALUES ('Operador Receptor Desconhecido', '222.333.444-55', 'PF', 15000.00, 'Consultor Autônomo', 'São Paulo', 'SP') RETURNING id
@@ -137,7 +113,6 @@ def popular_banco():
         cur.execute("INSERT INTO contas (cliente_id, numero_conta, saldo) VALUES (%s, '88202-2', 58000.00) RETURNING id", (c1_dest_cli,))
         c1_dest_conta = cur.fetchone()['id']
 
-        # 5 transações seguidas na mesma madrugada de R$ 9.800
         hora_smurf = datetime.now() - timedelta(days=1, hours=18)
         for i in range(5):
             cur.execute("""
@@ -145,7 +120,6 @@ def popular_banco():
                 VALUES (%s, %s, 9800.00, 'PIX', 'receptor@pagamento.com', %s, 'CONCLUIDA', 'Transferencia Pix')
             """, (c1_conta_id, c1_dest_conta, hora_smurf + timedelta(minutes=i*4)))
 
-        # Gerar Alerta para o Caso 1
         cur.execute("""
             INSERT INTO alertas_fraude (conta_alvo_id, tipo_alerta, score_risco, status, detalhes)
             VALUES (%s, 'SMURFING', 92, 'PENDENTE', %s)
@@ -157,10 +131,7 @@ def popular_banco():
             "incompatibilidade": "Movimentação 17x maior que a renda mensal declarada"
         })))
 
-        # ----------------------------------------------------
-        # CASO 2: CONTA DE PASSAGEM (Laranja Universitário)
-        # ----------------------------------------------------
-        # Conta aberta há 10 dias, recebe R$ 75.000 de uma fonte e esvazia tudo para outra em 6 minutos
+        # Caso 2: Conta de passagem (recebe aporte alto e esvazia em minutos)
         cur.execute("""
             INSERT INTO clientes (nome, documento, tipo_pessoa, renda_declarada, ocupacao, cidade, estado)
             VALUES ('Juliana Mendes Castro (Estudante/Laranja)', '333.444.555-66', 'PF', 1200.00, 'Estudante Universitária', 'Belo Horizonte', 'MG')
@@ -170,7 +141,6 @@ def popular_banco():
         cur.execute("INSERT INTO contas (cliente_id, numero_conta, saldo, data_abertura) VALUES (%s, '77303-3', 120.00, NOW() - INTERVAL '12 days') RETURNING id", (c2_cli,))
         c2_conta = cur.fetchone()['id']
 
-        # Recebe R$ 75k de conta X e envia R$ 74.800 para conta Y minutos depois
         conta_origem_laranja = random.choice(contas_ids)
         conta_fim_laranja = random.choice(contas_ids)
         tempo_base = datetime.now() - timedelta(days=2)
@@ -192,15 +162,13 @@ def popular_banco():
             "renda_declarada": 1200.00
         })))
 
-        # ----------------------------------------------------
-        # CASO 3: DISPOSITIVO COMPARTILHADO (Múltiplos CPFs no mesmo celular/VPN)
-        # ----------------------------------------------------
+        # Caso 3: Dispositivo e IP compartilhados entre titulares distintos
         cur.execute("""
             INSERT INTO dispositivos (device_id, modelo, sistema_operacional)
             VALUES ('DEV_COMPARTILHADO_FRAUDE_X77', 'Xiaomi Poco X5 (Rooted)', 'Android Custom') RETURNING id
         """)
         dev_compartilhado_id = cur.fetchone()['id']
-        ip_vpn_fraude = "45.181.24.11" # IP conhecido de VPN/Proxy
+        ip_vpn_fraude = "45.181.24.11"
 
         contas_compartilhadas = []
         for i, nome_falso in enumerate(['Marcos Vinicius Lima', 'Tatiane Rocha Alves', 'Rodrigo Barreto Silva']):
@@ -213,7 +181,6 @@ def popular_banco():
             cnt_c3 = cur.fetchone()['id']
             contas_compartilhadas.append(cnt_c3)
 
-            # Todos acessam do mesmo aparelho e mesmo IP
             cur.execute("""
                 INSERT INTO acessos (conta_id, dispositivo_id, ip_origem, geolocalizacao)
                 VALUES (%s, %s, %s, 'Curitiba - PR (VPN Datacenter)')
@@ -228,9 +195,7 @@ def popular_banco():
             "ip": ip_vpn_fraude
         })))
 
-        # ----------------------------------------------------
-        # CASO 4: TRIANGULAÇÃO CIRCULAR DE CAPITAL (A ➔ B ➔ C ➔ A)
-        # ----------------------------------------------------
+        # Caso 4: Triangulação circular (A -> B -> C -> A)
         contas_ciclo = []
         for i, nome_ciclo in enumerate(['Empresa Alpha Log', 'Beta Servicos Digitais', 'Gamma Consultoria ME']):
             cur.execute("""
@@ -241,7 +206,6 @@ def popular_banco():
             cur.execute("INSERT INTO contas (cliente_id, numero_conta, saldo) VALUES (%s, %s, 40000.00) RETURNING id", (cli_loop, f"5550{i}-5"))
             contas_ciclo.append(cur.fetchone()['id'])
 
-        # A -> B (R$ 30.000) -> C (R$ 29.500) -> A (R$ 29.000)
         t_ciclo = datetime.now() - timedelta(days=3)
         cur.execute("INSERT INTO transacoes (conta_origem_id, conta_destino_id, valor, tipo, data_hora, descricao) VALUES (%s, %s, 30000.00, 'TED', %s, 'Prestacao de Servico')", (contas_ciclo[0], contas_ciclo[1], t_ciclo))
         cur.execute("INSERT INTO transacoes (conta_origem_id, conta_destino_id, valor, tipo, data_hora, descricao) VALUES (%s, %s, 29500.00, 'TED', %s, 'Subcontratacao')", (contas_ciclo[1], contas_ciclo[2], t_ciclo + timedelta(hours=2)))
@@ -255,9 +219,7 @@ def popular_banco():
             "contas_envolvidas": contas_ciclo
         })))
 
-        # ----------------------------------------------------
-        # CASO 5: EMPRESA FANTASMA / FACHADA (CNPJ de 5 dias movimentando milhões)
-        # ----------------------------------------------------
+        # Caso 5: Empresa de fachada recém-aberta atuando como conta coletora
         cur.execute("""
             INSERT INTO clientes (nome, documento, tipo_pessoa, renda_declarada, ocupacao, data_abertura_empresa, cidade, estado)
             VALUES ('Nexus Global Intermediações LTDA (Fantasma)', '99.888.777/0001-11', 'PJ', 10000.00, 'Consultoria Empresarial', NOW() - INTERVAL '5 days', 'Brasília', 'DF')
@@ -282,8 +244,8 @@ def popular_banco():
             "valor_total_recebido": 240000.00
         })))
 
-    print("\n✅ BANCO POSTGRESQL POPULADO COM SUCESSO!")
-    print("✨ Total de clientes, contas, transações de ruído e os 5 Casos de Fraude gerados!")
+    print("Banco PostgreSQL populado com sucesso.")
+
 
 if __name__ == '__main__':
     popular_banco()

@@ -18,71 +18,78 @@ def _serializar(obj):
     return obj
 
 
-def consultar_dados_bancarios_sql(conta_id: int) -> dict:
+def consultar_processos_e_clientes_sql(termo_busca: str = "") -> dict:
     """
-    Consulta no PostgreSQL os dados cadastrais do titular (renda declarada, ocupação,
-    data de abertura da empresa), dispositivos de acesso e extrato de transações PIX/TED da conta.
+    Consulta no banco PostgreSQL do escritório os processos judiciais, clientes (PF/PJ),
+    advogados responsáveis, valores de causa, risco de perda (PROVAVEL, POSSIVEL, REMOTO),
+    próximos prazos e contratos de honorários. Se `termo_busca` for vazio, retorna o panorama geral.
     """
-    perfil = execute_query("""
-        SELECT cnt.id AS conta_id, cnt.numero_conta, cnt.saldo, cnt.status, cnt.data_abertura,
-               cli.nome, cli.documento, cli.tipo_pessoa, cli.renda_declarada,
-               cli.ocupacao, cli.data_abertura_empresa, cli.cidade, cli.estado, cli.score_credito
-        FROM contas cnt
-        JOIN clientes cli ON cli.id = cnt.cliente_id
-        WHERE cnt.id = %s
-    """, (conta_id,))
+    termo = f"%{termo_busca.strip()}%" if termo_busca and termo_busca.strip() else "%"
 
-    acessos = execute_query("""
-        SELECT d.device_id, d.modelo, d.sistema_operacional, a.ip_origem, a.geolocalizacao, a.data_hora
-        FROM acessos a
-        JOIN dispositivos d ON d.id = a.dispositivo_id
-        WHERE a.conta_id = %s
-    """, (conta_id,))
+    processos = execute_query("""
+        SELECT p.numero_cnj, c.nome AS cliente, c.documento AS doc_cliente, c.segmento,
+               a.nome AS advogado_responsavel, a.oab, p.parte_contraria,
+               p.area_direito, p.tribunal, p.valor_causa, p.risco_perda,
+               p.status, p.proximo_prazo, p.resumo_objeto
+        FROM processos p
+        JOIN clientes c ON c.id = p.cliente_id
+        JOIN advogados a ON a.id = p.advogado_id
+        WHERE c.nome ILIKE %s
+           OR p.numero_cnj ILIKE %s
+           OR p.parte_contraria ILIKE %s
+           OR p.area_direito ILIKE %s
+           OR a.nome ILIKE %s
+           OR p.resumo_objeto ILIKE %s
+        ORDER BY p.valor_causa DESC
+    """, (termo, termo, termo, termo, termo, termo))
 
-    transacoes = execute_query("""
-        SELECT t.id, t.valor, t.tipo, t.data_hora, t.descricao,
-               co.numero_conta AS conta_origem, cd.numero_conta AS conta_destino,
-               CASE WHEN t.conta_origem_id = %s THEN 'SAIDA' ELSE 'ENTRADA' END AS direcao
-        FROM transacoes t
-        JOIN contas co ON co.id = t.conta_origem_id
-        JOIN contas cd ON cd.id = t.conta_destino_id
-        WHERE t.conta_origem_id = %s OR t.conta_destino_id = %s
-        ORDER BY t.data_hora DESC
-        LIMIT 20
-    """, (conta_id, conta_id, conta_id))
+    contratos = execute_query("""
+        SELECT ch.codigo_contrato, c.nome AS cliente, ch.tipo_contrato,
+               ch.valor_mensal, ch.percentual_exito, ch.status_pagamento,
+               ch.data_assinatura, ch.data_vencimento
+        FROM contratos_honorarios ch
+        JOIN clientes c ON c.id = ch.cliente_id
+        WHERE c.nome ILIKE %s OR ch.codigo_contrato ILIKE %s OR ch.status_pagamento ILIKE %s
+        ORDER BY ch.valor_mensal DESC
+    """, (termo, termo, termo))
+
+    advogados = execute_query("SELECT nome, oab, especialidade, email FROM advogados ORDER BY nome")
 
     return _serializar({
-        "perfil_conta": dict(perfil[0]) if perfil else {},
-        "dispositivos_e_ips": [dict(a) for a in acessos],
-        "ultimas_transacoes": [dict(t) for t in transacoes],
+        "processos_encontrados": [dict(p) for p in processos],
+        "contratos_honorarios": [dict(c) for c in contratos],
+        "equipe_advogados": [dict(a) for a in advogados],
     })
 
 
-def investigar_vinculos_grafo(conta_id: int) -> dict:
+def explorar_rede_societaria_grafo(termo_cliente: str = "") -> dict:
     """
-    Consulta no banco de grafos FalkorDB (via Cypher) a teia de relacionamentos da conta:
-    ciclos de triangulação (A -> B -> C -> A), compartilhamento do mesmo aparelho físico ou IP
-    com outros titulares e rastreamento do fluxo de entrada e saída de recursos.
+    Consulta no banco de grafos FalkorDB (via Cypher) as conexões societárias, processuais
+    e de documentos enviados: grupos econômicos, partes contrárias recorrentes, teia de vínculos
+    de um cliente específico e relações de grafo extraídas de PDFs enviados.
     """
-    return _serializar({
-        "ciclos_financeiros": graph_queries.detectar_ciclos_financeiros(conta_id),
-        "contas_mesmo_dispositivo_ou_ip": graph_queries.contas_com_mesmo_dispositivo_ou_ip(conta_id),
-        "fluxo_saida": graph_queries.rastrear_fluxo_dinheiro(conta_id, direcao="saida", max_saltos=2),
-        "fluxo_entrada": graph_queries.rastrear_fluxo_dinheiro(conta_id, direcao="entrada", max_saltos=1),
-    })
+    termo = termo_cliente.strip() if termo_cliente else ""
+    resultado = {
+        "grupos_economicos_detectados": graph_queries.detectar_grupos_economicos(),
+        "partes_contrarias_recorrentes": graph_queries.partes_contrarias_recorrentes(),
+        "grafo_extraido_documentos": graph_queries.obter_grafo_de_documento(termo_busca=termo),
+    }
+    if termo:
+        resultado["rede_especifica_cliente"] = graph_queries.mapear_rede_cliente(termo)
+    return _serializar(resultado)
 
 
-def consultar_normas_regulatorias_rag(consulta: str) -> list:
+def buscar_documentos_juridicos_rag(consulta: str) -> list:
     """
-    Executa busca híbrida (Semântica Vetorial + Léxica BM25 com fusão RRF) no Qdrant Cloud
-    para encontrar artigos da Circular BACEN 3.978/2020, Carta Circular 4.001/2020,
-    códigos de tipologia do COAF e regras do MED aplicáveis ao caso investigado.
+    Executa busca híbrida (Semântica Vetorial Vertex AI + Léxica BM25 com fusão RRF) no Qdrant Cloud
+    sobre os documentos jurídicos, PDFs enviados, legislação (CLT, Código Civil, CPC, Lei 4.591/64,
+    Tema 779 STJ) e políticas de contratos e contingências (CPC 25) do escritório.
     """
-    return busca_hibrida(consulta, top_k=3)
+    return busca_hibrida(consulta, top_k=4)
 
 
 FERRAMENTAS_AGENTE = [
-    consultar_dados_bancarios_sql,
-    investigar_vinculos_grafo,
-    consultar_normas_regulatorias_rag,
+    consultar_processos_e_clientes_sql,
+    explorar_rede_societaria_grafo,
+    buscar_documentos_juridicos_rag,
 ]

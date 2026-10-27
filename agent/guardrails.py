@@ -2,18 +2,25 @@ import re
 from typing import Dict, List
 
 CODIGOS_OFICIAIS_VALIDOS = {
-    "COAF-TIP-101",
-    "COAF-TIP-102",
-    "COAF-TIP-103",
-    "COAF-TIP-104",
-    "COAF-TIP-105",
-    "REGRA-KYC-01",
-    "REGRA-KYC-02",
-    "NORM-BCB-3978",
-    "NORM-BCB-4001",
-    "MANUAL-MED-142",
-    "GOV-ALCADA-01",
-    "GOV-LGPD-02",
+    "LEG-TRAB-CLT",
+    "JUR-TRAB-01",
+    "JUR-TRAB-02",
+    "LEG-CIV-IDPJ",
+    "NORM-CC-ART50",
+    "NORM-CPC-133",
+    "LEG-IMOB-4591",
+    "NORM-IMOB-43A",
+    "NORM-IMOB-67A",
+    "LEG-TRIB-SOC",
+    "JUR-STJ-779",
+    "NORM-LSA-254A",
+    "NORM-LSA-118",
+    "POL-INTERNA-BANCA",
+    "CPC-25",
+    "CL-HON-2024",
+    "CL-HON-01",
+    "CL-HON-02",
+    "GOV-LGPD-JUR",
 }
 
 PADROES_BLOQUEADOS = [
@@ -38,7 +45,7 @@ def validar_entrada(pergunta: str) -> Dict:
         if re.search(padrao, texto_lower):
             return {
                 "aprovado": False,
-                "motivo": "Entrada bloqueada pelo Guardrail de Segurança (tentativa de violação de instrução ou comando destrutivo)."
+                "motivo": "Entrada bloqueada pelo Guardrail de Segurança (tentativa de violação de instrução ou comando SQL destrutivo)."
             }
     return {"aprovado": True, "motivo": "OK"}
 
@@ -46,10 +53,10 @@ def validar_entrada(pergunta: str) -> Dict:
 def auditar_resposta_ia(texto_resposta: str, trechos_rag_recuperados: List[str] = None) -> Dict:
     texto_mascarado = mascarar_dados_sensiveis(texto_resposta)
 
-    codigos_citados = set(re.findall(r"\b(?:COAF-TIP|REGRA-KYC|NORM-BCB|MANUAL-MED|GOV-ALCADA|GOV-LGPD)-\d+\b", texto_mascarado))
+    padrao_codigos = r"\b(?:LEG-TRAB-CLT|JUR-TRAB-\d+|LEG-CIV-IDPJ|NORM-CC-ART50|NORM-CPC-\d+|LEG-IMOB-\d+|NORM-IMOB-\w+|LEG-TRIB-SOC|JUR-STJ-\d+|NORM-LSA-\w+|POL-INTERNA-BANCA|CPC-25|CL-HON-\w+|GOV-LGPD-JUR)\b"
+    codigos_citados = set(re.findall(padrao_codigos, texto_mascarado))
     codigos_alucinados = [c for c in codigos_citados if c not in CODIGOS_OFICIAIS_VALIDOS]
 
-    # Confere também se o código citado estava presente nos chunks retornados pelo Qdrant
     nao_presentes_no_rag = []
     if trechos_rag_recuperados:
         contexto_unificado = "\n".join(trechos_rag_recuperados)
@@ -57,13 +64,13 @@ def auditar_resposta_ia(texto_resposta: str, trechos_rag_recuperados: List[str] 
             if c in CODIGOS_OFICIAIS_VALIDOS and c not in contexto_unificado:
                 nao_presentes_no_rag.append(c)
 
-    cpfs_expostos = re.findall(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", texto_resposta)
+    cpfs_cnpjs_expostos = re.findall(r"\b(?:\d{3}\.\d{3}\.\d{3}-\d{2}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})\b", texto_resposta)
 
     aprovado = len(codigos_alucinados) == 0
     return {
         "aprovado": aprovado,
         "texto_seguro": texto_mascarado,
-        "lgpd_mascarado": len(cpfs_expostos) > 0,
+        "lgpd_mascarado": len(cpfs_cnpjs_expostos) > 0,
         "codigos_validados": sorted(list(codigos_citados - set(codigos_alucinados))),
         "codigos_alucinados": codigos_alucinados,
         "codigos_fora_do_contexto_rag": nao_presentes_no_rag,

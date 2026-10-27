@@ -1,78 +1,65 @@
-DROP TABLE IF EXISTS alertas_fraude CASCADE;
-DROP TABLE IF EXISTS transacoes CASCADE;
-DROP TABLE IF EXISTS acessos CASCADE;
-DROP TABLE IF EXISTS dispositivos CASCADE;
-DROP TABLE IF EXISTS contas CASCADE;
+DROP TABLE IF EXISTS contratos_honorarios CASCADE;
+DROP TABLE IF EXISTS processos CASCADE;
+DROP TABLE IF EXISTS socios_e_vinculos CASCADE;
 DROP TABLE IF EXISTS clientes CASCADE;
+DROP TABLE IF EXISTS advogados CASCADE;
+
+CREATE TABLE advogados (
+    id SERIAL PRIMARY KEY,
+    nome VARCHAR(150) NOT NULL,
+    oab VARCHAR(30) UNIQUE NOT NULL,
+    especialidade VARCHAR(60) NOT NULL,
+    email VARCHAR(120)
+);
 
 CREATE TABLE clientes (
     id SERIAL PRIMARY KEY,
     nome VARCHAR(150) NOT NULL,
     documento VARCHAR(20) UNIQUE NOT NULL,
     tipo_pessoa VARCHAR(2) NOT NULL CHECK (tipo_pessoa IN ('PF', 'PJ')),
-    renda_declarada NUMERIC(15, 2) NOT NULL,
-    ocupacao VARCHAR(100),
-    data_cadastro DATE NOT NULL DEFAULT CURRENT_DATE,
-    data_abertura_empresa DATE,
+    segmento VARCHAR(100),
     cidade VARCHAR(100),
     estado VARCHAR(2),
-    score_credito INT DEFAULT 500
+    data_cadastro DATE NOT NULL DEFAULT CURRENT_DATE
 );
 
-CREATE TABLE contas (
+CREATE TABLE socios_e_vinculos (
     id SERIAL PRIMARY KEY,
+    cliente_origem_id INT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+    nome_vinculado VARCHAR(150) NOT NULL,
+    documento_vinculado VARCHAR(20) NOT NULL,
+    tipo_vinculo VARCHAR(50) NOT NULL, -- 'SOCIO_ADMINISTRADOR', 'HOLDING_CONTROLADORA', 'SUBSIDIARIA', 'REPRESENTANTE_LEGAL'
+    participacao_percentual NUMERIC(5, 2) DEFAULT 0.00
+);
+
+CREATE TABLE processos (
+    id SERIAL PRIMARY KEY,
+    numero_cnj VARCHAR(35) UNIQUE NOT NULL,
     cliente_id INT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
-    numero_conta VARCHAR(20) UNIQUE NOT NULL,
-    agencia VARCHAR(10) NOT NULL DEFAULT '0001',
-    tipo_conta VARCHAR(20) NOT NULL DEFAULT 'CORRENTE' CHECK (tipo_conta IN ('CORRENTE', 'POUPANCA', 'PAGAMENTO')),
-    saldo NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
-    status VARCHAR(20) NOT NULL DEFAULT 'ATIVA' CHECK (status IN ('ATIVA', 'BLOQUEADA_CAUTELAR', 'ENCERRADA', 'SOB_ANALISE')),
-    data_abertura TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    advogado_id INT NOT NULL REFERENCES advogados(id),
+    parte_contraria VARCHAR(150) NOT NULL,
+    area_direito VARCHAR(50) NOT NULL CHECK (area_direito IN ('TRABALHISTA', 'CIVEL', 'TRIBUTARIO', 'SOCIETARIO', 'CONSUMIDOR')),
+    tribunal VARCHAR(50) NOT NULL,
+    valor_causa NUMERIC(15, 2) NOT NULL,
+    risco_perda VARCHAR(20) NOT NULL CHECK (risco_perda IN ('PROVAVEL', 'POSSIVEL', 'REMOTO')),
+    status VARCHAR(30) NOT NULL CHECK (status IN ('ATIVO', 'SUSPENSO', 'ACORDO', 'ENCERRADO', 'RECURSO')),
+    proximo_prazo DATE,
+    resumo_objeto TEXT
 );
 
-CREATE TABLE dispositivos (
+CREATE TABLE contratos_honorarios (
     id SERIAL PRIMARY KEY,
-    device_id VARCHAR(100) UNIQUE NOT NULL,
-    modelo VARCHAR(100),
-    sistema_operacional VARCHAR(50),
-    data_primeiro_uso TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    codigo_contrato VARCHAR(30) UNIQUE NOT NULL,
+    cliente_id INT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+    tipo_contrato VARCHAR(50) NOT NULL, -- 'PARTIDO_MENSAL', 'EXITO_CONTENCIOSO', 'CONSULTORIA_SOCIETARIA'
+    valor_mensal NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    percentual_exito NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
+    status_pagamento VARCHAR(30) NOT NULL CHECK (status_pagamento IN ('EM_DIA', 'EM_ATRASO', 'QUITADO')),
+    data_assinatura DATE NOT NULL,
+    data_vencimento DATE
 );
 
-CREATE TABLE acessos (
-    id SERIAL PRIMARY KEY,
-    conta_id INT NOT NULL REFERENCES contas(id) ON DELETE CASCADE,
-    dispositivo_id INT NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
-    ip_origem VARCHAR(45) NOT NULL,
-    geolocalizacao VARCHAR(100),
-    data_hora TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE transacoes (
-    id SERIAL PRIMARY KEY,
-    conta_origem_id INT NOT NULL REFERENCES contas(id),
-    conta_destino_id INT NOT NULL REFERENCES contas(id),
-    valor NUMERIC(15, 2) NOT NULL,
-    tipo VARCHAR(10) NOT NULL CHECK (tipo IN ('PIX', 'TED', 'BOLETO')),
-    chave_pix_destino VARCHAR(100),
-    data_hora TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status VARCHAR(20) NOT NULL DEFAULT 'CONCLUIDA' CHECK (status IN ('CONCLUIDA', 'BLOQUEADA', 'REVERTIDA')),
-    descricao TEXT
-);
-
-CREATE TABLE alertas_fraude (
-    id SERIAL PRIMARY KEY,
-    conta_alvo_id INT NOT NULL REFERENCES contas(id),
-    tipo_alerta VARCHAR(50) NOT NULL,
-    score_risco INT NOT NULL CHECK (score_risco BETWEEN 0 AND 100),
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'EM_INVESTIGACAO', 'CONCLUIDO_COM_BLOQUEIO', 'FALSO_POSITIVO')),
-    detalhes JSONB NOT NULL,
-    data_criacao TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    analise_ia TEXT
-);
-
-CREATE INDEX idx_transacoes_origem ON transacoes(conta_origem_id);
-CREATE INDEX idx_transacoes_destino ON transacoes(conta_destino_id);
-CREATE INDEX idx_transacoes_data ON transacoes(data_hora);
-CREATE INDEX idx_acessos_conta ON acessos(conta_id);
-CREATE INDEX idx_acessos_dispositivo ON acessos(dispositivo_id);
-CREATE INDEX idx_alertas_status ON alertas_fraude(status);
+CREATE INDEX idx_processos_cliente ON processos(cliente_id);
+CREATE INDEX idx_processos_advogado ON processos(advogado_id);
+CREATE INDEX idx_processos_area ON processos(area_direito);
+CREATE INDEX idx_vinculos_cliente ON socios_e_vinculos(cliente_origem_id);

@@ -12,7 +12,7 @@ load_dotenv()
 
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "normas_bacen_coaf")
+COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "acervo_juridico")
 
 
 def _get_qdrant() -> QdrantClient:
@@ -87,7 +87,7 @@ def busca_hibrida(pergunta: str, top_k: int = 3) -> List[Dict]:
 
 
 if __name__ == "__main__":
-    consulta_teste = "Qual a regra para código COAF-TIP-104 e lavagem em circuito fechado?"
+    consulta_teste = "Quais os requisitos para reconhecimento de grupo econômico na CLT e desconsideração da personalidade jurídica no Art. 50 do CC?"
     print(f"Consulta: '{consulta_teste}'\n")
 
     print("--- Busca Léxica (BM25 Esparso) ---")

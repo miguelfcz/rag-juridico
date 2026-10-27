@@ -1,108 +1,175 @@
 from graph.connection import get_graph
 
-# No FalkorDB, relationships(p) pode vir fora de ordem em caminhos variáveis/cíclicos;
-# extraímos origem/destino explícitos de cada aresta e reconstruímos a sequência.
-_TRANSFERENCIAS = "[r IN relationships(p) | [startNode(r).numero, endNode(r).numero, r.valor, r.data_hora]]"
-
 
 def _rows(result) -> list:
     colunas = [c[1] if isinstance(c, (list, tuple)) else c for c in result.header]
     return [dict(zip(colunas, linha)) for linha in result.result_set]
 
 
-def _validar_saltos(n: int, maximo: int = 5) -> int:
-    n = int(n)
-    if not 1 <= n <= maximo:
-        raise ValueError(f"Número de saltos deve estar entre 1 e {maximo}")
-    return n
-
-
-def _encadear(trechos: list, inicio: str = None) -> list:
-    restantes = list(trechos)
-    if inicio is None:
-        destinos = {t["destino"] for t in restantes}
-        sem_antecessor = [t for t in restantes if t["origem"] not in destinos]
-        primeiro = sem_antecessor[0] if sem_antecessor else restantes[0]
-    else:
-        primeiro = next(t for t in restantes if t["origem"] == inicio)
-    ordenados = [primeiro]
-    restantes.remove(primeiro)
-    while restantes:
-        proximo = next((t for t in restantes if t["origem"] == ordenados[-1]["destino"]), None)
-        if proximo is None:
-            break
-        ordenados.append(proximo)
-        restantes.remove(proximo)
-    return ordenados
-
-
-def _formatar_caminho(linha: dict, inicio: str = None) -> dict:
-    trechos = [
-        {"origem": o, "destino": d, "valor": v, "data_hora": dt}
-        for o, d, v, dt in linha.pop("transferencias")
-    ]
-    trechos = _encadear(trechos, inicio)
-    linha["caminho"] = [trechos[0]["origem"]] + [t["destino"] for t in trechos]
-    linha["transferencias"] = trechos
-    return linha
-
-
-def detectar_ciclos_financeiros(conta_id: int, max_saltos: int = 4) -> list:
-    n = _validar_saltos(max_saltos)
-    q = f"""
-        MATCH p = (c:Conta {{id: $id}})-[:TRANSFERIU*2..{n}]->(c)
-        RETURN c.numero AS inicio, {_TRANSFERENCIAS} AS transferencias
-        LIMIT 20
-    """
-    linhas = _rows(get_graph().query(q, {"id": conta_id}))
-    return [_formatar_caminho(l, inicio=l.pop("inicio")) for l in linhas]
-
-
-def contas_com_mesmo_dispositivo_ou_ip(conta_id: int) -> list:
+def detectar_grupos_economicos() -> list:
     q = """
-        MATCH (c:Conta {id: $id})-[:ACESSOU_VIA|CONECTOU_DE]->(x)<-[:ACESSOU_VIA|CONECTOU_DE]-(outra:Conta)
+        MATCH (c1:Cliente)-[v1:POSSUI_VINCULO]->(s:Socio)<-[v2:POSSUI_VINCULO]-(c2:Cliente)
+        WHERE c1.nome < c2.nome
+        RETURN s.nome AS socio_ou_holding_comum,
+               s.documento AS documento_vinculo,
+               c1.nome AS empresa_1,
+               v1.tipo AS vinculo_empresa_1,
+               v1.participacao AS participacao_1,
+               c2.nome AS empresa_2,
+               v2.tipo AS vinculo_empresa_2,
+               v2.participacao AS participacao_2
+        ORDER BY socio_ou_holding_comum
+    """
+    return _rows(get_graph().query(q))
+
+
+def listar_clientes_grafo() -> list:
+    q = """
+        MATCH (c:Cliente)
+        WHERE (c)-[:POSSUI_VINCULO]->() OR (c)-[:PARTE_EM]->()
+        RETURN DISTINCT c.nome AS nome
+        ORDER BY c.nome
+    """
+    return [r["nome"] for r in _rows(get_graph().query(q))]
+
+
+def mapear_rede_cliente(termo_cliente: str) -> dict:
+    g = get_graph()
+
+    socios_q = """
+        MATCH (c:Cliente)-[v:POSSUI_VINCULO]->(s:Socio)
+        WHERE toLower(c.nome) CONTAINS toLower($termo) OR c.documento CONTAINS $termo
+        OPTIONAL MATCH (outra:Cliente)-[v2:POSSUI_VINCULO]->(s)
         WHERE outra <> c
-        MATCH (cli:Cliente)-[:TITULAR_DE]->(outra)
-        RETURN labels(x)[0] AS tipo_vinculo,
-               coalesce(x.device_id, x.endereco) AS identificador,
-               outra.numero AS conta,
-               cli.nome AS titular,
-               cli.documento AS documento
+        RETURN c.nome AS cliente,
+               s.nome AS vinculado,
+               s.documento AS documento_vinculado,
+               v.tipo AS tipo_vinculo,
+               v.participacao AS percentual,
+               collect(DISTINCT outra.nome) AS outras_empresas_mesmo_socio
     """
-    return _rows(get_graph().query(q, {"id": conta_id}))
-
-
-def rastrear_fluxo_dinheiro(conta_id: int, direcao: str = "saida", max_saltos: int = 3) -> list:
-    n = _validar_saltos(max_saltos)
-    if direcao == "saida":
-        padrao = f"(c:Conta {{id: $id}})-[:TRANSFERIU*1..{n}]->(fim:Conta)"
-    elif direcao == "entrada":
-        padrao = f"(fim:Conta)-[:TRANSFERIU*1..{n}]->(c:Conta {{id: $id}})"
-    else:
-        raise ValueError("direcao deve ser 'saida' ou 'entrada'")
-    q = f"""
-        MATCH p = {padrao}
-        RETURN c.numero AS conta_investigada, {_TRANSFERENCIAS} AS transferencias, length(p) AS saltos
-        ORDER BY saltos
-        LIMIT 30
+    processos_q = """
+        MATCH (c:Cliente)-[:PARTE_EM]->(p:Processo)-[:CONTRA]->(pc:ParteContraria)
+        MATCH (adv:Advogado)-[:PATROCINA]->(p)
+        WHERE toLower(c.nome) CONTAINS toLower($termo) OR c.documento CONTAINS $termo
+        RETURN c.nome AS cliente,
+               p.numero_cnj AS numero_cnj,
+               p.area_direito AS area_direito,
+               p.tribunal AS tribunal,
+               p.valor_causa AS valor_causa,
+               p.risco_perda AS risco_perda,
+               p.status AS status,
+               pc.nome AS parte_contraria,
+               adv.nome AS advogado_responsavel
     """
-    linhas = _rows(get_graph().query(q, {"id": conta_id}))
-    resultado = []
-    for l in linhas:
-        conta = l.pop("conta_investigada")
-        resultado.append(_formatar_caminho(l, inicio=conta if direcao == "saida" else None))
-    return resultado
+    return {
+        "vinculos_societarios": _rows(g.query(socios_q, {"termo": termo_cliente})),
+        "processos_conectados": _rows(g.query(processos_q, {"termo": termo_cliente})),
+    }
 
 
-def receptores_concentrados(min_origens: int = 3, limite: int = 10) -> list:
+def partes_contrarias_recorrentes() -> list:
     q = """
-        MATCH (o:Conta)-[t:TRANSFERIU]->(d:Conta)<-[:TITULAR_DE]-(cli:Cliente)
-        WITH d, cli, count(DISTINCT o) AS origens, sum(t.valor) AS total_recebido
-        WHERE origens >= $min
-        RETURN d.numero AS conta, cli.nome AS titular, cli.tipo_pessoa AS tipo,
-               cli.data_abertura_empresa AS abertura_empresa,
-               origens, total_recebido
-        ORDER BY total_recebido DESC
-        LIMIT $limite
+        MATCH (c:Cliente)-[:PARTE_EM]->(p:Processo)-[:CONTRA]->(pc:ParteContraria)
+        WITH pc, count(p) AS qtd_processos, sum(p.valor_causa) AS valor_total_disputado,
+             collect(DISTINCT c.nome) AS clientes_afetados
+        RETURN pc.nome AS parte_contraria,
+               qtd_processos,
+               valor_total_disputado,
+               clientes_afetados
+        ORDER BY qtd_processos DESC, valor_total_disputado DESC
     """
-    return _rows(get_graph().query(q, {"min": min_origens, "limite": limite}))
+    return _rows(get_graph().query(q))
+
+
+def obter_subgrafo_visualizacao(termo_busca: str = "") -> dict:
+    g = get_graph()
+
+    if termo_busca and termo_busca.strip():
+        q_socios = """
+            MATCH (c:Cliente)-[v:POSSUI_VINCULO]->(s:Socio)
+            OPTIONAL MATCH (c2:Cliente)-[v2:POSSUI_VINCULO]->(s)
+            WHERE toLower(c.nome) CONTAINS toLower($filtro)
+               OR toLower(c.segmento) CONTAINS toLower($filtro)
+               OR toLower(s.nome) CONTAINS toLower($filtro)
+               OR toLower(s.documento) CONTAINS toLower($filtro)
+               OR toLower(v.tipo) CONTAINS toLower($filtro)
+               OR (c2 IS NOT NULL AND toLower(c2.nome) CONTAINS toLower($filtro))
+            RETURN c.id AS c1_id, c.nome AS c1_nome, c.segmento AS c1_seg,
+                   s.documento AS s_doc, s.nome AS s_nome, v.tipo AS v1_tipo, v.participacao AS v1_part,
+                   c2.id AS c2_id, c2.nome AS c2_nome, v2.tipo AS v2_tipo, v2.participacao AS v2_part
+        """
+        q_proc = """
+            MATCH (c:Cliente)-[:PARTE_EM]->(p:Processo)-[:CONTRA]->(pc:ParteContraria)
+            MATCH (adv:Advogado)-[:PATROCINA]->(p)
+            WHERE toLower(c.nome) CONTAINS toLower($filtro)
+               OR toLower(p.numero_cnj) CONTAINS toLower($filtro)
+               OR toLower(p.area_direito) CONTAINS toLower($filtro)
+               OR toLower(p.tribunal) CONTAINS toLower($filtro)
+               OR toLower(p.risco_perda) CONTAINS toLower($filtro)
+               OR toLower(pc.nome) CONTAINS toLower($filtro)
+               OR toLower(adv.nome) CONTAINS toLower($filtro)
+            RETURN c.id AS c_id, c.nome AS c_nome,
+                   p.numero_cnj AS cnj, p.area_direito AS area, p.valor_causa AS valor, p.risco_perda AS risco,
+                   pc.nome AS parte_contraria,
+                   adv.id AS adv_id, adv.nome AS adv_nome, adv.especialidade AS adv_esp
+        """
+        params = {"filtro": termo_busca.strip()}
+    else:
+        q_socios = """
+            MATCH (c:Cliente)-[v:POSSUI_VINCULO]->(s:Socio)
+            OPTIONAL MATCH (c2:Cliente)-[v2:POSSUI_VINCULO]->(s)
+            RETURN c.id AS c1_id, c.nome AS c1_nome, c.segmento AS c1_seg,
+                   s.documento AS s_doc, s.nome AS s_nome, v.tipo AS v1_tipo, v.participacao AS v1_part,
+                   c2.id AS c2_id, c2.nome AS c2_nome, v2.tipo AS v2_tipo, v2.participacao AS v2_part
+        """
+        q_proc = """
+            MATCH (c:Cliente)-[:PARTE_EM]->(p:Processo)-[:CONTRA]->(pc:ParteContraria)
+            MATCH (adv:Advogado)-[:PATROCINA]->(p)
+            RETURN c.id AS c_id, c.nome AS c_nome,
+                   p.numero_cnj AS cnj, p.area_direito AS area, p.valor_causa AS valor, p.risco_perda AS risco,
+                   pc.nome AS parte_contraria,
+                   adv.id AS adv_id, adv.nome AS adv_nome, adv.especialidade AS adv_esp
+        """
+        params = {}
+
+    return {
+        "socios": _rows(g.query(q_socios, params)),
+        "processos": _rows(g.query(q_proc, params)),
+    }
+
+
+def listar_documentos_com_grafo() -> list:
+    q = """
+        MATCH (d:DocumentoGrafo)
+        RETURN DISTINCT d.nome AS nome
+        ORDER BY d.nome
+    """
+    return [r["nome"] for r in _rows(get_graph().query(q))]
+
+
+def obter_grafo_de_documento(nome_documento: str = "", termo_busca: str = "") -> list:
+    g = get_graph()
+    filtro_doc = nome_documento if (nome_documento and not nome_documento.startswith("Todos")) else ""
+    termo = termo_busca.strip() if termo_busca else ""
+
+    q = """
+        MATCH (o:EntidadeDoc)-[r:RELACAO_DOC]->(dst:EntidadeDoc)
+        WHERE ($doc = '' OR o.documento = $doc)
+          AND (
+              $termo = ''
+              OR toLower(o.nome) CONTAINS toLower($termo)
+              OR toLower(dst.nome) CONTAINS toLower($termo)
+              OR toLower(r.tipo) CONTAINS toLower($termo)
+              OR toLower(o.tipo) CONTAINS toLower($termo)
+              OR toLower(dst.tipo) CONTAINS toLower($termo)
+          )
+        RETURN o.documento AS documento,
+               o.nome AS origem,
+               o.tipo AS tipo_origem,
+               r.tipo AS relacao,
+               dst.nome AS destino,
+               dst.tipo AS tipo_destino
+    """
+    return _rows(g.query(q, {"doc": filtro_doc, "termo": termo}))
+

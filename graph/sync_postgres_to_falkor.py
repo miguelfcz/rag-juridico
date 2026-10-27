@@ -34,57 +34,90 @@ def sincronizar():
     except Exception:
         pass
 
-    for label, prop in [("Cliente", "id"), ("Conta", "id"), ("Dispositivo", "id"), ("IP", "endereco")]:
+    indices = [
+        ("Cliente", "id"),
+        ("Cliente", "documento"),
+        ("Socio", "documento"),
+        ("Advogado", "id"),
+        ("Processo", "numero_cnj"),
+        ("ParteContraria", "nome"),
+    ]
+    for label, prop in indices:
         g.query(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
 
     clientes = _carregar("""
-        SELECT id, nome, documento, tipo_pessoa, renda_declarada, ocupacao,
-               data_abertura_empresa, cidade, estado
+        SELECT id, nome, documento, tipo_pessoa, segmento, cidade, estado, data_cadastro
         FROM clientes
     """)
     g.query("""
         UNWIND $rows AS r
-        CREATE (:Cliente {id: r.id, nome: r.nome, documento: r.documento, tipo_pessoa: r.tipo_pessoa,
-                          renda_declarada: r.renda_declarada, ocupacao: r.ocupacao,
-                          data_abertura_empresa: r.data_abertura_empresa, cidade: r.cidade, estado: r.estado})
+        CREATE (:Cliente {
+            id: r.id,
+            nome: r.nome,
+            documento: r.documento,
+            tipo_pessoa: r.tipo_pessoa,
+            segmento: r.segmento,
+            cidade: r.cidade,
+            estado: r.estado,
+            data_cadastro: r.data_cadastro
+        })
     """, {"rows": clientes})
 
-    contas = _carregar("SELECT id, cliente_id, numero_conta, status, data_abertura FROM contas")
+    advogados = _carregar("SELECT id, nome, oab, especialidade, email FROM advogados")
     g.query("""
         UNWIND $rows AS r
-        MATCH (cli:Cliente {id: r.cliente_id})
-        CREATE (cli)-[:TITULAR_DE]->(:Conta {id: r.id, numero: r.numero_conta, status: r.status,
-                                             data_abertura: r.data_abertura})
-    """, {"rows": contas})
+        CREATE (:Advogado {
+            id: r.id,
+            nome: r.nome,
+            oab: r.oab,
+            especialidade: r.especialidade,
+            email: r.email
+        })
+    """, {"rows": advogados})
 
-    dispositivos = _carregar("SELECT id, device_id, modelo, sistema_operacional FROM dispositivos")
-    g.query("""
-        UNWIND $rows AS r
-        CREATE (:Dispositivo {id: r.id, device_id: r.device_id, modelo: r.modelo, so: r.sistema_operacional})
-    """, {"rows": dispositivos})
-
-    acessos = _carregar("SELECT conta_id, dispositivo_id, ip_origem, geolocalizacao FROM acessos")
-    g.query("""
-        UNWIND $rows AS r
-        MATCH (c:Conta {id: r.conta_id}), (d:Dispositivo {id: r.dispositivo_id})
-        MERGE (c)-[:ACESSOU_VIA]->(d)
-        MERGE (ip:IP {endereco: r.ip_origem})
-        MERGE (c)-[:CONECTOU_DE {geo: r.geolocalizacao}]->(ip)
-    """, {"rows": acessos})
-
-    transacoes = _carregar("""
-        SELECT id, conta_origem_id, conta_destino_id, valor, tipo, data_hora, status
-        FROM transacoes
+    vinculos = _carregar("""
+        SELECT cliente_origem_id, nome_vinculado, documento_vinculado,
+               tipo_vinculo, participacao_percentual
+        FROM socios_e_vinculos
     """)
     g.query("""
         UNWIND $rows AS r
-        MATCH (o:Conta {id: r.conta_origem_id}), (d:Conta {id: r.conta_destino_id})
-        CREATE (o)-[:TRANSFERIU {id: r.id, valor: r.valor, tipo: r.tipo, data_hora: r.data_hora, status: r.status}]->(d)
-    """, {"rows": transacoes})
+        MATCH (cli:Cliente {id: r.cliente_origem_id})
+        MERGE (s:Socio {documento: r.documento_vinculado})
+        ON CREATE SET s.nome = r.nome_vinculado
+        CREATE (cli)-[:POSSUI_VINCULO {
+            tipo: r.tipo_vinculo,
+            participacao: r.participacao_percentual
+        }]->(s)
+    """, {"rows": vinculos})
+
+    processos = _carregar("""
+        SELECT id, numero_cnj, cliente_id, advogado_id, parte_contraria,
+               area_direito, tribunal, valor_causa, risco_perda, status, proximo_prazo
+        FROM processos
+    """)
+    g.query("""
+        UNWIND $rows AS r
+        MATCH (cli:Cliente {id: r.cliente_id}), (adv:Advogado {id: r.advogado_id})
+        MERGE (pc:ParteContraria {nome: r.parte_contraria})
+        CREATE (p:Processo {
+            id: r.id,
+            numero_cnj: r.numero_cnj,
+            area_direito: r.area_direito,
+            tribunal: r.tribunal,
+            valor_causa: r.valor_causa,
+            risco_perda: r.risco_perda,
+            status: r.status,
+            proximo_prazo: r.proximo_prazo
+        })
+        CREATE (cli)-[:PARTE_EM]->(p)
+        CREATE (adv)-[:PATROCINA]->(p)
+        CREATE (p)-[:CONTRA]->(pc)
+    """, {"rows": processos})
 
     nos = g.query("MATCH (n) RETURN count(n)").result_set[0][0]
     arestas = g.query("MATCH ()-[r]->() RETURN count(r)").result_set[0][0]
-    print(f"Grafo sincronizado: {nos} nós e {arestas} arestas.")
+    print(f"Grafo Jurídico sincronizado no FalkorDB: {nos} nós e {arestas} arestas.")
 
 
 if __name__ == "__main__":
